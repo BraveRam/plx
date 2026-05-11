@@ -34,9 +34,15 @@ describe('safeText', () => {
     expect(safeText('café — naïve ✓')).toBe('café — naïve ✓');
   });
 
-  test('renders C0 control chars in caret notation', () => {
+  test('passes tab and newline through (legitimate in here-docs / multi-line commands)', () => {
+    expect(safeText('a\tb')).toBe('a\tb');
+    expect(safeText('line1\nline2')).toBe('line1\nline2');
+    expect(safeText("cat > f <<'EOF'\nhi\nEOF")).toBe("cat > f <<'EOF'\nhi\nEOF");
+  });
+
+  test('renders the dangerous C0 control chars in caret notation', () => {
     expect(safeText('a\x00b')).toBe('a^@b'); // NUL
-    expect(safeText('a\tb')).toBe('a^Ib'); // TAB (0x09 -> ^I)
+    expect(safeText('a\bb')).toBe('a^Hb'); // BS (0x08 -> ^H)
     expect(safeText('a\rb')).toBe('a^Mb'); // CR (0x0d -> ^M)
     expect(safeText('a\x1bb')).toBe('a^[b'); // ESC (0x1b -> ^[)
     expect(safeText('a\x1fb')).toBe('a^_b'); // US (0x1f -> ^_)

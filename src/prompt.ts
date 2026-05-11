@@ -47,8 +47,11 @@ const LABEL_COLUMN_WIDTH = 'Explanation'.length + 2;
  * through here.)
  */
 export function safeText(s: string): string {
+  // Tab (0x09) and newline (0x0a) pass through — they're legitimate in
+  // here-docs / multi-line commands and can't spoof a line. Everything else in
+  // C0/DEL/C1 is rendered visibly.
   // eslint-disable-next-line no-control-regex -- intentional: we're sanitising control chars
-  return s.replace(/[\x00-\x1f\x7f-\x9f]/g, (ch) => {
+  return s.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, (ch) => {
     const code = ch.charCodeAt(0);
     if (code === 0x7f) return '^?';
     if (code < 0x20) return `^${String.fromCharCode(code + 0x40)}`;

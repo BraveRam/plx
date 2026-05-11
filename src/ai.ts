@@ -133,6 +133,50 @@ function messageOf(err: unknown): string {
   return String(err);
 }
 
+/** Errors that retrying won't fix — wrong/missing key, bad model id, budget exhausted. */
+function isPermanentGatewayError(err: unknown): boolean {
+  return APICallError.isInstance(err) && [400, 401, 402, 403].includes(err.statusCode ?? 0);
+}
+
+/** Total attempts for an AI call: 1 initial + (MAX_AI_ATTEMPTS - 1) retries. */
+const MAX_AI_ATTEMPTS = 3;
+
+/** `true` when the error looks like "the model's output didn't fit the schema" (a small model burping). */
+function isSchemaMismatchError(err: unknown): boolean {
+  return err instanceof Error && /no object generated|did not match (?:the )?schema|did not return a structured/i.test(err.message);
+}
+
+/**
+ * Run an AI call, retrying transient failures — rate limits, 5xx, network blips,
+ * and the model returning output that doesn't match the schema (which smaller
+ * models do now and then). Bails immediately on permanent errors (auth, bad
+ * model id, budget). On final failure, throws an `Error` whose `.message` is
+ * safe to print directly (friendly for known gateway statuses / schema misses).
+ */
+async function withGatewayRetries<T>(modelId: string, work: () => Promise<T>): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_AI_ATTEMPTS; attempt += 1) {
+    try {
+      return await work();
+    } catch (err) {
+      lastErr = err;
+      if (isPermanentGatewayError(err) || attempt === MAX_AI_ATTEMPTS) break;
+      await new Promise((resolve) => setTimeout(resolve, 350 * attempt)); // brief backoff, then retry
+    }
+  }
+
+  if (APICallError.isInstance(lastErr)) {
+    throw new Error(friendlyGatewayMessage(lastErr.statusCode, modelId) ?? `AI request failed: ${lastErr.message}`);
+  }
+  if (isSchemaMismatchError(lastErr)) {
+    throw new Error(
+      `The model failed to return a valid response after ${MAX_AI_ATTEMPTS} tries. Try again, or pass --model with a more capable model (e.g. anthropic/claude-sonnet-4.6).`,
+    );
+  }
+  if (lastErr instanceof Error) throw new Error(lastErr.message);
+  throw new Error(`AI request failed: ${messageOf(lastErr)}`);
+}
+
 /**
  * Translate a natural-language request into a structured {@link CommandPlan}.
  *
@@ -151,7 +195,7 @@ export async function generateCommandPlan(args: { request: string; model?: strin
 
   const modelId = args.model ?? DEFAULT_MODEL;
 
-  try {
+  return withGatewayRetries(modelId, async () => {
     const result = await generateText({
       model: modelId,
       system: SYSTEM_PROMPT,
@@ -165,17 +209,7 @@ export async function generateCommandPlan(args: { request: string; model?: strin
       throw new Error('The model did not return a structured command plan.');
     }
     return plan;
-  } catch (err) {
-    if (APICallError.isInstance(err)) {
-      const friendly = friendlyGatewayMessage(err.statusCode, modelId);
-      throw new Error(friendly ?? `AI request failed: ${err.message}`);
-    }
-    // Preserve our own already-friendly errors (e.g. the empty-response check).
-    if (err instanceof Error) {
-      throw new Error(err.message);
-    }
-    throw new Error(`AI request failed: ${messageOf(err)}`);
-  }
+  });
 }
 
 /* ───────────────────────── Agent mode ───────────────────────── */
@@ -260,7 +294,7 @@ export async function runAgentTurn(args: {
 
   const modelId = args.model ?? DEFAULT_MODEL;
 
-  try {
+  return withGatewayRetries(modelId, async () => {
     const result = await generateText({
       model: modelId,
       system: AGENT_SYSTEM_PROMPT,
@@ -274,14 +308,5 @@ export async function runAgentTurn(args: {
       throw new Error('The agent model returned an empty step.');
     }
     return { step, responseMessages: result.response.messages };
-  } catch (err) {
-    if (APICallError.isInstance(err)) {
-      const friendly = friendlyGatewayMessage(err.statusCode, modelId);
-      throw new Error(friendly ?? `AI request failed: ${err.message}`);
-    }
-    if (err instanceof Error) {
-      throw new Error(err.message);
-    }
-    throw new Error(`AI request failed: ${messageOf(err)}`);
-  }
+  });
 }

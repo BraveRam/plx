@@ -98,11 +98,12 @@ const RM_RECURSIVE_FORCE =
 export const DENY_PATTERNS: ReadonlyArray<{ pattern: RegExp; reason: string }> = [
   // --- control / escape characters --------------------------------------
   {
-    // A legitimate shell command never contains raw control bytes. Refusing
-    // them blocks terminal-spoofing tricks (e.g. `\r` / ESC sequences that
-    // make the rendered command differ from what bash actually runs).
-    pattern: /[\x00-\x1f\x7f-\x9f]/,
-    reason: 'Refuses commands containing control or escape characters (terminal-spoofing risk).',
+    // Refuses raw control/escape bytes — they enable terminal-spoofing tricks
+    // (a `\r` or ESC sequence that makes the rendered command differ from what
+    // bash runs). Tab (0x09) and newline (0x0a) are allowed: they appear
+    // legitimately in here-docs and multi-line commands, and can't spoof a line.
+    pattern: /[\x00-\x08\x0b-\x1f\x7f-\x9f]/,
+    reason: 'Refuses commands containing control or escape characters (other than tab/newline) — terminal-spoofing risk.',
   },
 
   // --- rm -rf / and friends ---------------------------------------------
