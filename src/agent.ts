@@ -33,6 +33,7 @@ import {
   renderAgentOutcome,
   renderAgentStep,
   renderBlocked,
+  withSpinner,
 } from './prompt.ts';
 import type { CliOptions } from './types.ts';
 
@@ -147,7 +148,9 @@ export async function runAgent(args: RunAgentArgs): Promise<number> {
   let invalidRetries = 0;
 
   while (stepsUsed < maxSteps) {
-    const { step, responseMessages } = await turn({ model: options.model, messages });
+    const { step, responseMessages } = await withSpinner('thinking…', () =>
+      turn({ model: options.model, messages }),
+    );
     messages.push(...responseMessages);
 
     if (step.status === 'done') {
@@ -236,16 +239,18 @@ export async function runAgent(args: RunAgentArgs): Promise<number> {
 
   // Step budget exhausted without an explicit done/blocked — ask for a final wrap-up.
   try {
-    const { step } = await turn({
-      model: options.model,
-      messages: [
-        ...messages,
-        {
-          role: 'user',
-          content: `You have reached the ${maxSteps}-step limit and may not run any more commands. Return status "done" if the goal is genuinely complete, otherwise "blocked", with a "summary" of what you accomplished and what (if anything) is left.`,
-        },
-      ],
-    });
+    const { step } = await withSpinner('wrapping up…', () =>
+      turn({
+        model: options.model,
+        messages: [
+          ...messages,
+          {
+            role: 'user',
+            content: `You have reached the ${maxSteps}-step limit and may not run any more commands. Return status "done" if the goal is genuinely complete, otherwise "blocked", with a "summary" of what you accomplished and what (if anything) is left.`,
+          },
+        ],
+      }),
+    );
     if (step.status === 'done') {
       renderAgentFinish('done', step.summary ?? 'Goal accomplished.', stepsUsed, maxSteps);
       return 0;

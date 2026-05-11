@@ -161,6 +161,43 @@ export async function confirm(question: string): Promise<boolean> {
   }
 }
 
+/* ───────────────────────── Waiting indicator ───────────────────────── */
+
+/** Braille spinner frames, cycled while waiting on the model. */
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const;
+const SPINNER_INTERVAL_MS = 80;
+
+/**
+ * Run `work()` while showing an animated spinner with `label` on **stderr** (so
+ * it never pollutes stdout — JSON output, redirected commands, …). It only
+ * animates when stderr is a TTY; otherwise it's a plain `await work()`, so pipes
+ * and CI stay clean. The spinner line is always erased before returning, even if
+ * `work()` throws.
+ */
+export async function withSpinner<T>(label: string, work: () => Promise<T>): Promise<T> {
+  if (!process.stderr.isTTY) return work();
+
+  let frame = 0;
+  const render = (): void => {
+    const dot = SPINNER_FRAMES[frame % SPINNER_FRAMES.length]!;
+    // `\r` → start of line, write the spinner+label, `\x1b[K` → erase to EOL.
+    process.stderr.write(`\r${chalk.cyan(dot)} ${chalk.dim(label)}\x1b[K`);
+  };
+
+  render();
+  const timer = setInterval(() => {
+    frame += 1;
+    render();
+  }, SPINNER_INTERVAL_MS);
+
+  try {
+    return await work();
+  } finally {
+    clearInterval(timer);
+    process.stderr.write('\r\x1b[K'); // back to column 0, erase the spinner line
+  }
+}
+
 /* ───────────────────────── Agent mode ───────────────────────── */
 
 /** A short risk tag (no background block) for the compact agent-step line. */

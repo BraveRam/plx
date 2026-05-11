@@ -40,7 +40,7 @@ import { runAgent, DEFAULT_MAX_STEPS, MIN_MAX_STEPS, MAX_MAX_STEPS } from './age
 import { loadGlobalConfig } from './config.ts';
 import { evaluateSafety } from './safety.ts';
 import { detectShell, executeCommand } from './execute.ts';
-import { renderPlan, renderBlocked, confirm } from './prompt.ts';
+import { renderPlan, renderBlocked, confirm, withSpinner } from './prompt.ts';
 import { recordHistory } from './history.ts';
 import {
   asShellKind,
@@ -199,7 +199,9 @@ function resolveMaxSteps(raw: string | undefined): number {
  * and is surfaced by the caller — except in the REPL, which catches it per-line.
  */
 async function handleRequest(request: string, options: CliOptions): Promise<number> {
-  const plan: CommandPlan = await generateCommandPlan({ request, model: options.model });
+  const plan: CommandPlan = await withSpinner('thinking…', () =>
+    generateCommandPlan({ request, model: options.model }),
+  );
 
   if (options.json) {
     console.log(JSON.stringify(plan, null, 2));
