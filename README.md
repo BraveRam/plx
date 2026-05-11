@@ -2,7 +2,7 @@
 
 **Natural-language shell assistant.** Describe what you want; `plx` asks an LLM to translate it into a single POSIX command, shows you the command with a plain-English explanation and a colour-coded risk rating, runs it past a local safety layer, asks for confirmation when it matters, then executes it — streaming output live. An `--agent` mode pursues a goal over multiple steps, reading each command's output before deciding the next.
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) &nbsp; built with [Bun](https://bun.com) · TypeScript · the [Vercel AI SDK](https://sdk.vercel.ai) + [AI Gateway](https://vercel.com/docs/ai-gateway)
+[![CI](https://github.com/BraveRam/plx/actions/workflows/ci.yml/badge.svg)](https://github.com/BraveRam/plx/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) &nbsp; built with [Bun](https://bun.com) · TypeScript · the [Vercel AI SDK](https://sdk.vercel.ai) + [AI Gateway](https://vercel.com/docs/ai-gateway)
 
 ```console
 $ plx "show which process is listening on port 8000"
