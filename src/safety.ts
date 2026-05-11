@@ -68,6 +68,19 @@ import type { SafetyVerdict } from './types.ts';
  */
 const CMD_POS = '(?:^|[;&|(])\\s*(?:sudo\\s+)?';
 
+/* ── `rm` flag forms (short bundles or long forms), used in the deny patterns ──
+ * Quantifiers are bounded so the lookaheads they sit in can't backtrack
+ * catastrophically (and the schema caps the command at ~2000 chars anyway). */
+/** A short flag bundle containing `r`, or `--recursive`: `-r`, `-rv`, `-fr`, `--recursive`. */
+const RM_RECURSIVE = '(?:-[a-z]{0,15}r[a-z]{0,15}|--recursive)\\b';
+/** A short flag bundle containing `f`, or `--force`. */
+const RM_FORCE = '(?:-[a-z]{0,15}f[a-z]{0,15}|--force)\\b';
+/** A single short bundle containing both: `-rf`, `-fr`, `-rfv`, `-vfr`, … */
+const RM_RF = '-[a-z]{0,15}(?:rf|fr)[a-z]{0,15}\\b';
+/** Lookahead (placed right after `\brm\b`) asserting recursive+force flags follow. */
+const RM_RECURSIVE_FORCE =
+  `(?=\\s+(?:${RM_RF}|${RM_RECURSIVE}[^\\n]{0,200}\\s+${RM_FORCE}|${RM_FORCE}[^\\n]{0,200}\\s+${RM_RECURSIVE}))`;
+
 /**
  * Patterns that are NEVER allowed to run — refused even with `--yes`.
  *
@@ -83,25 +96,35 @@ const CMD_POS = '(?:^|[;&|(])\\s*(?:sudo\\s+)?';
  * short, human-readable, and safe to print directly to a terminal.
  */
 export const DENY_PATTERNS: ReadonlyArray<{ pattern: RegExp; reason: string }> = [
+  // --- control / escape characters --------------------------------------
+  {
+    // A legitimate shell command never contains raw control bytes. Refusing
+    // them blocks terminal-spoofing tricks (e.g. `\r` / ESC sequences that
+    // make the rendered command differ from what bash actually runs).
+    pattern: /[\x00-\x1f\x7f-\x9f]/,
+    reason: 'Refuses commands containing control or escape characters (terminal-spoofing risk).',
+  },
+
   // --- rm -rf / and friends ---------------------------------------------
+  // `rm` with recursive+force flags (short bundles, separate short flags, or the
+  // `--recursive`/`--force` long forms) targeting `/`, `/*`, or the literal home
+  // directory (`~`, `~/`, `$HOME`, `${HOME}`). A specific subdirectory like
+  // `rm -rf ./build` or `rm -rf ~/Downloads/junk` is NOT denied here — it goes
+  // through the normal confirmation gate.
   {
-    // `rm` with combined (-rf / -fr) or separate (-r ... -f) recursive+force
-    // flags, possibly other flags too, targeting exactly `/` (then end/space).
-    pattern:
-      /\brm\b(?=(?:\s+-[A-Za-z]*r[A-Za-z]*\b.*\s+-[A-Za-z]*f[A-Za-z]*\b|\s+-[A-Za-z]*f[A-Za-z]*\b.*\s+-[A-Za-z]*r[A-Za-z]*\b|\s+-[A-Za-z]*(?:rf|fr)[A-Za-z]*\b))\b[^\n]*\s\/(?=\s|$)/i,
-    reason: 'Refuses to recursively delete the root filesystem (`rm -rf /`).',
+    pattern: new RegExp(`\\brm\\b${RM_RECURSIVE_FORCE}[^\\n]{0,300}\\s\\/(?=\\s|$)`, 'i'),
+    reason: 'Refuses to recursively force-delete the root filesystem (`rm -rf /`).',
   },
   {
-    // Same, but targeting `/*`.
-    pattern:
-      /\brm\b(?=(?:\s+-[A-Za-z]*r[A-Za-z]*\b.*\s+-[A-Za-z]*f[A-Za-z]*\b|\s+-[A-Za-z]*f[A-Za-z]*\b.*\s+-[A-Za-z]*r[A-Za-z]*\b|\s+-[A-Za-z]*(?:rf|fr)[A-Za-z]*\b))\b[^\n]*\s\/\*(?=\s|$)/i,
-    reason: 'Refuses to recursively delete everything under root (`rm -rf /*`).',
+    pattern: new RegExp(`\\brm\\b${RM_RECURSIVE_FORCE}[^\\n]{0,300}\\s\\/\\*(?=\\s|$)`, 'i'),
+    reason: 'Refuses to recursively force-delete everything under root (`rm -rf /*`).',
   },
   {
-    // Same flag soup, targeting the literal home directory: `~` or `$HOME`.
-    pattern:
-      /\brm\b(?=(?:\s+-[A-Za-z]*r[A-Za-z]*\b.*\s+-[A-Za-z]*f[A-Za-z]*\b|\s+-[A-Za-z]*f[A-Za-z]*\b.*\s+-[A-Za-z]*r[A-Za-z]*\b|\s+-[A-Za-z]*(?:rf|fr)[A-Za-z]*\b))\b[^\n]*\s(?:~|\$HOME|\$\{HOME\})(?=\s|\/?\s|$)/i,
-    reason: 'Refuses to recursively delete your home directory.',
+    pattern: new RegExp(
+      `\\brm\\b${RM_RECURSIVE_FORCE}[^\\n]{0,300}\\s(?:~|\\$HOME|\\$\\{HOME\\})\\/?(?=\\s|$)`,
+      'i',
+    ),
+    reason: 'Refuses to recursively force-delete your home directory (`rm -rf ~`).',
   },
   {
     pattern: /--no-preserve-root\b/i,
@@ -169,8 +192,8 @@ export const DENY_PATTERNS: ReadonlyArray<{ pattern: RegExp; reason: string }> =
  * allowed to run, but always behind a confirmation prompt (regardless of the
  * model's `riskLevel`), unless `--yes` is passed. This is the home for
  * `shutdown`/`reboot`/`halt`/`poweroff`, `init 0/6`, suspend/hibernate, logging
- * out, and locking the screen — drastic but perfectly legitimate things to ask
- * a terminal assistant to do.
+ * out, locking the screen, and a few other "drastic but legitimate" actions
+ * such as force-pushing a git remote.
  *
  * The power/runlevel keywords are command-position anchored ({@link CMD_POS})
  * so `echo "reboot the box"` is not flagged but `echo hi && reboot` is. The
@@ -179,6 +202,12 @@ export const DENY_PATTERNS: ReadonlyArray<{ pattern: RegExp; reason: string }> =
  * etc. except to run them.
  */
 export const CONFIRM_PATTERNS: ReadonlyArray<{ pattern: RegExp; reason: string }> = [
+  {
+    // `git push --force` / `-f` / `--force-with-lease` / `--mirror` / `--delete`
+    // — rewrites or destroys refs on a remote. (`git push origin main` is fine.)
+    pattern: /\bgit\s+push\b[^\n]*?(?:--force\b|--mirror\b|--delete\b|(?:^|\s)-[a-z]*f[a-z]*\b)/i,
+    reason: 'This force-pushes, mirrors, or deletes a branch on a git remote (rewrites/destroys remote history).',
+  },
   {
     pattern: new RegExp(CMD_POS + '(?:shutdown|reboot|halt|poweroff)\\b', 'i'),
     reason: 'This will shut down, reboot, or halt the machine.',

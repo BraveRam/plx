@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { withSpinner } from '../src/prompt.ts';
+import { safeText, withSpinner } from '../src/prompt.ts';
 
 // Under `bun test`, stderr is not a TTY, so withSpinner is effectively a plain
 // `await work()` — these tests cover that pass-through contract (value, error,
@@ -24,5 +24,35 @@ describe('withSpinner', () => {
       calls += 1;
     });
     expect(calls).toBe(1);
+  });
+});
+
+describe('safeText', () => {
+  test('leaves printable text untouched', () => {
+    expect(safeText('rm -rf ./build && echo "done" | cat')).toBe('rm -rf ./build && echo "done" | cat');
+    expect(safeText('')).toBe('');
+    expect(safeText('café — naïve ✓')).toBe('café — naïve ✓');
+  });
+
+  test('renders C0 control chars in caret notation', () => {
+    expect(safeText('a\x00b')).toBe('a^@b'); // NUL
+    expect(safeText('a\tb')).toBe('a^Ib'); // TAB (0x09 -> ^I)
+    expect(safeText('a\rb')).toBe('a^Mb'); // CR (0x0d -> ^M)
+    expect(safeText('a\x1bb')).toBe('a^[b'); // ESC (0x1b -> ^[)
+    expect(safeText('a\x1fb')).toBe('a^_b'); // US (0x1f -> ^_)
+  });
+
+  test('renders DEL as ^? and C1 controls as \\xNN', () => {
+    expect(safeText('a\x7fb')).toBe('a^?b');
+    expect(safeText('a\x85b')).toBe('a\\x85b'); // NEL (0x85)
+    expect(safeText('a\x9fb')).toBe('a\\x9fb'); // APC (0x9f)
+  });
+
+  test('neutralises a line-spoofing payload (ESC + CR)', () => {
+    const malicious = 'rm -rf ./safe\x1b[2K\rrm -rf ~';
+    const cleaned = safeText(malicious);
+    expect(cleaned).not.toContain('\x1b');
+    expect(cleaned).not.toContain('\r');
+    expect(cleaned).toBe('rm -rf ./safe^[[2K^Mrm -rf ~');
   });
 });

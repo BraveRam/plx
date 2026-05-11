@@ -38,6 +38,25 @@ const INDENT = '  ';
 const LABEL_COLUMN_WIDTH = 'Explanation'.length + 2;
 
 /**
+ * Make a model-supplied string safe to print: render control / escape bytes
+ * visibly (caret notation for C0/DEL, `\xNN` for C1) instead of letting them
+ * reach the terminal. The model — especially a prompt-injected one — must not
+ * be able to emit a `\r` or ESC sequence that rewrites the rendered command or
+ * spoofs the `[y/N]` line, so what you see can't differ from what `bash -c`
+ * runs. (Live-streamed *command output* is a separate matter and isn't routed
+ * through here.)
+ */
+export function safeText(s: string): string {
+  // eslint-disable-next-line no-control-regex -- intentional: we're sanitising control chars
+  return s.replace(/[\x00-\x1f\x7f-\x9f]/g, (ch) => {
+    const code = ch.charCodeAt(0);
+    if (code === 0x7f) return '^?';
+    if (code < 0x20) return `^${String.fromCharCode(code + 0x40)}`;
+    return `\\x${code.toString(16).padStart(2, '0')}`; // C1 controls 0x80–0x9f
+  });
+}
+
+/**
  * Render a colour-coded risk badge for the given level.
  *
  * The badge is a high-contrast inverse block (so it reads at a glance even in a
@@ -101,9 +120,9 @@ export function renderPlan(plan: CommandPlan, ctx: { shell: ShellInfo }): void {
   const { shell } = ctx;
 
   console.log();
-  console.log(field('Command', chalk.bold.cyan(plan.command)));
+  console.log(field('Command', chalk.bold.cyan(safeText(plan.command))));
   console.log(
-    field('Explanation', wrapExplanation(plan.explanation, EXPLANATION_WRAP_WIDTH)),
+    field('Explanation', wrapExplanation(safeText(plan.explanation), EXPLANATION_WRAP_WIDTH)),
   );
   console.log(field('Risk', colorRisk(plan.riskLevel)));
 
@@ -128,8 +147,8 @@ export function renderBlocked(command: string, reason: string): void {
   console.error(
     `${INDENT}${chalk.red.bold('✗ Refusing to run this command — it matches a hard safety block.')}`,
   );
-  console.error(`${INDENT}  ${chalk.dim('Command:')} ${chalk.red(command)}`);
-  console.error(`${INDENT}  ${chalk.dim('Reason: ')} ${chalk.red(reason)}`);
+  console.error(`${INDENT}  ${chalk.dim('Command:')} ${chalk.red(safeText(command))}`);
+  console.error(`${INDENT}  ${chalk.dim('Reason: ')} ${chalk.red(safeText(reason))}`);
   console.error();
 }
 
@@ -216,7 +235,7 @@ function riskTag(level: RiskLevel): string {
 export function renderAgentBanner(goal: string, model: string, maxSteps: number): void {
   console.log();
   console.log(`${chalk.bold.magenta('plx agent')} ${chalk.dim(`· up to ${maxSteps} steps · ${model}`)}`);
-  console.log(`${INDENT}${chalk.dim('goal:')} ${goal}`);
+  console.log(`${INDENT}${chalk.dim('goal:')} ${safeText(goal)}`);
   console.log();
 }
 
@@ -228,13 +247,13 @@ export function renderAgentBanner(goal: string, model: string, maxSteps: number)
 export function renderAgentStep(stepNumber: number, maxSteps: number, step: AgentStep): void {
   console.log(chalk.dim(`── step ${stepNumber}/${maxSteps} ${'─'.repeat(Math.max(0, 40 - String(stepNumber).length - String(maxSteps).length))}`));
   if (step.thought.trim().length > 0) {
-    console.log(`${chalk.dim('·')} ${chalk.italic(step.thought.trim())}`);
+    console.log(`${chalk.dim('·')} ${chalk.italic(safeText(step.thought.trim()))}`);
   }
   if (step.status === 'continue' && step.command) {
     const risk = step.riskLevel ? ` ${chalk.dim('[')}${riskTag(step.riskLevel)}${chalk.dim(']')}` : '';
-    console.log(`${chalk.cyan('$')} ${chalk.bold(step.command)}${risk}`);
+    console.log(`${chalk.cyan('$')} ${chalk.bold(safeText(step.command))}${risk}`);
     if (step.explanation && step.explanation.trim().length > 0) {
-      console.log(`${INDENT}${chalk.dim(step.explanation.trim())}`);
+      console.log(`${INDENT}${chalk.dim(safeText(step.explanation.trim()))}`);
     }
   }
 }
@@ -272,7 +291,7 @@ export function renderAgentFinish(
     console.log(`${chalk.yellow.bold('⚠ stopped')} ${usage}`);
   }
   if (summary.trim().length > 0) {
-    console.log(`${INDENT}${summary.trim()}`);
+    console.log(`${INDENT}${safeText(summary.trim())}`);
   }
   console.log();
 }

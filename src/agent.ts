@@ -9,10 +9,13 @@
  *
  * Safety: the deny-list is still absolute — a hard-blocked command is never run,
  * even with `--yes`; the agent is told it was refused and must try something
- * else (or stop). `safe`/`caution` steps run automatically (that's the point of
- * an agent); a `dangerous` step still prompts for confirmation unless `--yes`.
- * A declined step stops the run. Each executed command is recorded in
- * `~/.plx_history` (unless `--no-history`).
+ * else (or stop). Beyond that, only strictly read-only (`safe`) steps run
+ * unattended: `caution` and `dangerous` steps (and anything the safety layer
+ * flags) prompt for confirmation unless `--yes`. This matters because the
+ * command output we feed back to the model is untrusted — a steered agent must
+ * not be able to mutate things without a human in the loop. A declined step
+ * stops the run. Each executed command is recorded in `~/.plx_history` (unless
+ * `--no-history`).
  *
  * Statelessness: the model API is stateless, so the conversation is rebuilt on
  * every turn by accumulating a `messages` array. Nothing persists between
@@ -200,11 +203,19 @@ export async function runAgent(args: RunAgentArgs): Promise<number> {
       continue;
     }
 
-    if (!options.yes && (verdict.forceConfirm || step.riskLevel === 'dangerous')) {
+    // Confirm any step that isn't strictly read-only (or that the safety layer
+    // flags) unless --yes. Auto-running `caution` steps would let a steered
+    // agent mutate things without a human in the loop, so they prompt too.
+    if (!options.yes && (verdict.forceConfirm || step.riskLevel !== 'safe')) {
       if (verdict.forceConfirm && verdict.reason) {
         console.log(chalk.yellow(`  ${verdict.reason}`));
       }
-      const label = step.riskLevel === 'dangerous' ? `${chalk.red.bold('dangerous')} command` : 'command';
+      const label =
+        step.riskLevel === 'dangerous'
+          ? `${chalk.red.bold('dangerous')} command`
+          : step.riskLevel === 'caution'
+            ? `${chalk.yellow('caution')} command`
+            : 'command';
       const ok = await confirm(`Run this ${label}?`);
       if (!ok) {
         console.log(chalk.dim('Declined — stopping the agent.'));

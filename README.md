@@ -33,7 +33,7 @@ Run this command? [y/N] y
 
 - **Natural language → one shell command.** One request in, one POSIX command out (a pipeline or `&&`-chain counts as one).
 - **Structured, explained, rated.** The model returns `{ command, explanation, riskLevel, requiresConfirmation }`; you see all of it before anything runs.
-- **A safety layer that doesn't depend on the model.** A fixed deny-list of catastrophic patterns (`rm -rf /` and friends, `mkfs`, `dd` to a block device, fork bombs, `chmod -R 777 /`, piping a downloaded script into a shell, …) is refused outright — no flag overrides it. Power/session commands (`shutdown`, `reboot`, `halt`, suspend/hibernate, log out, lock the screen) always ask first, whatever the model thinks. A read-only allow-list (`ls`, `find`, `grep`, `cat`, `ps`, `df`, …) skips the prompt for obviously safe commands. Everything else asks based on the model's risk rating.
+- **A safety layer that doesn't depend on the model.** A fixed deny-list of catastrophic patterns (`rm -rf /` & home-dir variants — long flags too, `mkfs`, `dd` to a block device, fork bombs, `chmod -R 777 /`, piping a downloaded script into a shell, commands with raw control/escape bytes, …) is refused outright — no flag overrides it. Power/session commands (`shutdown`, `reboot`, suspend/hibernate, log out, lock the screen) and `git push --force` always ask first, whatever the model thinks. A read-only allow-list (`ls`, `find`, `grep`, `cat`, `ps`, `df`, …) skips the prompt for obviously safe commands. Everything else asks based on the model's risk rating.
 - **Agent mode (`--agent`).** Give it a goal; it works step by step — run a command, read the output, decide the next — up to a step budget (default 20).
 - **`cd` that sticks.** With the optional [shell integration](#shell-integration), `plx "take me to ~/projects"` actually moves *your* shell — and so does `cd x && …` in any command.
 - **Live output.** Commands run through `bash -c` / `sh -c` with stdio inherited, so output streams in real time.
@@ -126,7 +126,7 @@ bun run dev -- --agent "set up this project"
 | --- | --- |
 | `[request...]` | The natural-language request — or, with `--agent`, the goal. Omit it entirely to start the interactive REPL. |
 | `--dry-run` | Show the generated command but do not execute it. (Ignored with `--agent`.) |
-| `-y`, `--yes` | Skip the confirmation prompt and execute immediately. Deny-listed commands are still refused. With `--agent`, also auto-runs `dangerous` steps. |
+| `-y`, `--yes` | Skip the confirmation prompt and execute immediately. Deny-listed commands are still refused. With `--agent`, also auto-runs `caution`/`dangerous` steps (without it, only read-only steps run unattended). |
 | `--json` | Print the raw structured JSON plan and exit (no execution). (Ignored with `--agent`.) |
 | `--agent` | Agentic mode: pursue the request over multiple steps. See [Agent mode](#agent-mode). |
 | `--max-steps <n>` | Agent mode only: maximum command steps before stopping. Default `20`; clamped to `1`–`100`. |
@@ -170,8 +170,8 @@ Module layout (`src/`):
 
 `plx` runs shell commands an LLM wrote. It has four gates, applied in order:
 
-1. **Deny-list — absolute backstop.** A fixed set of regex patterns for catastrophic commands (`rm -rf /` and variants, `mkfs`, `dd` to a block device, output redirection onto a raw block device, classic fork bombs, `chmod -R 777 /`, `chown -R … /`, `mv … /dev/null`, piping a downloaded script straight into a shell, …). A match means the command is **never** run — no flag, no prompt, and no model risk rating overrides it. `--yes` does not affect this gate.
-2. **Always-confirm — power & session state.** Commands that shut down, reboot, halt, or power off the machine; change runlevel (`init 0`/`6`); suspend or hibernate; log out; or lock the screen (`shutdown`, `reboot`, `systemctl poweroff`/`suspend`, `loginctl lock-session`, `xdg-screensaver lock`, `swaylock`, `pmset displaysleepnow`, …). These are allowed — but you're always asked first, regardless of the model's risk rating. `--yes` skips this prompt like any other.
+1. **Deny-list — absolute backstop.** A fixed set of regex patterns for catastrophic commands (`rm -rf /` / `/*` / the literal home dir — short *and* long flags, anything that disables `--preserve-root`, `mkfs`, `dd` to a block device, output redirection onto a raw block device, classic fork bombs, `chmod -R 777 /`, `chown -R … /`, `mv … /dev/null`, piping a downloaded script straight into a shell, and any command containing raw control/escape characters — a terminal-spoofing vector). A match means the command is **never** run — no flag, no prompt, and no model risk rating overrides it. `--yes` does not affect this gate. (A `rm -rf` of a *specific* subdirectory like `./build` is *not* denied — it goes through gate 4.)
+2. **Always-confirm.** Commands that change the machine's power or session state — shut down / reboot / halt / power off, change runlevel (`init 0`/`6`), suspend or hibernate, log out, lock the screen (`shutdown`, `reboot`, `systemctl poweroff`/`suspend`, `loginctl lock-session`, `xdg-screensaver lock`, `swaylock`, `pmset displaysleepnow`, …) — plus `git push --force` / `--mirror` / `--delete` (rewrites or destroys a remote). These are allowed, but you're always asked first regardless of the model's risk rating. `--yes` skips this prompt like any other.
 3. **Read-only allow-list — skip the prompt.** Commands whose first word is read-only by nature (`ls`, `find`, `grep`, `cat`, `head`, `tail`, `ps`, `df`, `du`, `pwd`, `wc`, `stat`, …) *and* that contain no shell metacharacters that could chain or redirect (`;`, `|`, `&`, `<`, `>`, `$`, backticks, `$(…)`) run without asking. `find . | xargs rm -f` starts with `find` but the pipe disqualifies it.
 4. **Confirmation — everything else.** Any command that is none of the above is shown to you and waits for a `y` based on the model's risk rating: `caution` and `dangerous` commands prompt unless you passed `--yes`; `dangerous` always prompts unless `--yes`. `--dry-run` shows the command without running it.
 
@@ -191,6 +191,7 @@ plx agent · up to 20 steps · deepseek/deepseek-v4-flash
 · No node_modules yet — install dependencies first.
 $ bun install [caution]
   Installs the project's dependencies from the lockfile.
+Run this caution command? [y/N] y
 ... (live output) ...
 → ok (1.7 s)
 
@@ -198,16 +199,18 @@ $ bun install [caution]
 · Dependencies installed; run the test suite.
 $ bun test [safe]
   Runs the project's test suite.
-... (live output) ...
+... (live output) ...               ← read-only, runs without asking
 → ok (210 ms)
 
 ✓ done (2/20 steps used)
   Installed dependencies and ran the tests — all suites passed.
 ```
 
+(Pass `--agent --yes` for a hands-off run that doesn't pause on `caution`/`dangerous` steps — the deny-list still applies.)
+
 The step budget defaults to **20**; set it with `--max-steps <n>` (clamped to 1–100). Each step prints a counter, the agent's one-line reasoning, the command and its risk tag, then its output streams live and the outcome (`ok` / `exit N` / `timed out`) is shown. The run ends with `✓ done`, `⚠ stopped`, or `⚠ step limit reached`, plus a summary.
 
-**Safety in agent mode.** The deny-list is still absolute — a hard-blocked command is never run (even with `--yes`), and the agent is told it was refused and must try something else or stop. `safe` and `caution` steps run automatically — that's the point of an agent — so point it at goals you'd be comfortable letting a careful colleague do at your terminal, and watch the steps as they scroll by (Ctrl-C stops it instantly). A `dangerous` step still pauses for a `y`; `--yes` skips that too. Declining a step stops the run. Each executed command is recorded in `~/.plx_history` unless `--no-history`. `--json` and `--dry-run` have no effect with `--agent`.
+**Safety in agent mode.** The deny-list is still absolute — a hard-blocked command is never run (even with `--yes`), and the agent is told it was refused and must try something else or stop. Beyond that, only strictly read-only (`safe`) steps run unattended: **`caution` and `dangerous` steps prompt for a `y`** (as does anything the always-confirm list catches) unless you pass `--yes`. This is deliberate — the command output fed back to the model is untrusted (a README, log line, or fetched page the agent reads could try to steer it), and the agent's system prompt is explicitly told that command output is data, never instructions; the human-in-the-loop on mutating steps is the backstop if that fails. So: leave `--yes` off and approve each mutating step, *or* pass `--yes` for a hands-off run of a goal you trust (deny-list still applies). Declining a step stops the run. Each executed command is recorded in `~/.plx_history` unless `--no-history`. `--json` and `--dry-run` have no effect with `--agent`.
 
 A step that never exits — a dev server, `tail -f`, an interactive editor — is killed after a per-step timeout (2 minutes) and reported as a timeout, so agent mode is best aimed at goals that *complete* (prefer "verify the app builds and starts" over "run the dev server"). `cd` only affects the command it appears in; the agent knows this and chains `cd … && …`.
 
