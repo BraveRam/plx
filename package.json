@@ -1,7 +1,7 @@
 {
   "name": "plx",
   "version": "0.1.0",
-  "description": "Natural-language shell assistant — turn plain English into safe, confirmable POSIX commands, with an optional multi-step agent mode.",
+  "description": "Natural-language shell assistant \u2014 turn plain English into safe, confirmable POSIX commands, with an optional multi-step agent mode.",
   "license": "MIT",
   "type": "module",
   "module": "src/index.ts",
@@ -24,7 +24,9 @@
     "start": "bun run src/index.ts",
     "build": "bun build src/index.ts --compile --outfile plx",
     "test": "bun test",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "bunx tsc --noEmit",
+    "lint": "eslint src/ tests/",
+    "lint:fix": "eslint --fix src/ tests/"
   },
   "dependencies": {
     "ai": "^6",
@@ -34,7 +36,10 @@
     "zod": "^4"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@typescript-eslint/eslint-plugin": "^8.59.3",
+    "@typescript-eslint/parser": "^8.59.3",
+    "eslint": "^10.3.0"
   },
   "peerDependencies": {
     "typescript": "^5"
