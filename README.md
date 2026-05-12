@@ -38,7 +38,7 @@ Run this command? [y/N] y
 - **`cd` that sticks.** With the optional [shell integration](#shell-integration), `plx "take me to ~/projects"` actually moves *your* shell — and so does `cd x && …` in any command.
 - **Live output.** Commands run through `bash -c` / `sh -c` with stdio inherited, so output streams in real time.
 - **Quality-of-life flags.** `--dry-run` (show, don't run), `--yes` (skip confirmation), `--json` (machine-readable plan), `--model` (any AI Gateway model).
-- **Stateless.** No conversation history is stored; each invocation is independent.
+- **Stateless across invocations.** Nothing about your requests is persisted; each `plx` process starts cold. (The REPL keeps in-memory chat context for the *session only* — wiped on exit or `/clear`.)
 - **Interactive REPL.** Run `plx` with no arguments for a `plx>` prompt.
 - **Command log.** Executed commands are appended to `~/.plx_history` (opt out with `--no-history`).
 - **Linux & macOS.** Generated commands are POSIX-oriented; works the same under `bash`, `zsh`, `sh`, and falls back gracefully under `fish`.
@@ -222,15 +222,21 @@ Run `plx` with no arguments to open a prompt:
 $ plx
 plx — interactive. /help for commands · model: deepseek/deepseek-v4-flash
 
-plx> find the 10 largest files under /var/log
-...
+plx> echo a line saying hello
+  Command  echo hello
+  ...
+plx> now do the same but add the word world
+  Command  echo 'hello world'        ← it remembered the previous turn
+  ...
 plx> /agent install deps, run the tests, and tell me what failed
 plx agent · up to 20 steps · …
 ...
 plx> exit
 ```
 
-Each line is handled like a one-shot invocation (still stateless — no memory between lines). A failed line — an AI error, a blocked command, a declined step — is reported and the session continues. REPL commands:
+**Chat context (session-scoped).** In one-shot mode, each line is sent to the model with the earlier turns of the session, so follow-ups like *"now delete them"* or *"that failed, try X"* have context. It's in-memory only — wiped by `/clear` and gone when you exit; nothing is written to disk. A failed line (AI error, blocked command, declined step) is reported and the session continues. (Agent runs are self-contained — they don't read or write this chat context.)
+
+REPL commands:
 
 | | |
 |---|---|
@@ -238,6 +244,7 @@ Each line is handled like a one-shot invocation (still stateless — no memory b
 | `/agent` | switch to **agent mode**: each line becomes a goal (up to `--max-steps`, default 20) |
 | `/agent <goal>` | run one goal in agent mode without switching |
 | `/once` | switch back to one-shot mode |
+| `/clear` | forget the chat context built up this session |
 | `/help` | the command list |
 | `/exit`, `exit`, `quit`, Ctrl-D | quit |
 

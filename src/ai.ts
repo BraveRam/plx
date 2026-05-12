@@ -85,6 +85,10 @@ export const SYSTEM_PROMPT: string = [
   'The "explanation" field: 1 to 3 plain-English sentences saying what the command does and why it',
   "satisfies the request. Call out notable side effects the user should know about before running it.",
   '',
+  'If the conversation contains earlier turns, treat them as context — e.g. "now delete them" refers',
+  'to whatever came before — but your response is still EXACTLY ONE shell command for the most recent',
+  'request. A "(I ran the previous command; it exited N.)"-style note from the user is just feedback.',
+  '',
   'If the request is impossible, nonsensical, self-contradictory, or cannot be done safely with a',
   "single shell command, do NOT invent a destructive command to \"fulfil\" it. Instead return a",
   "harmless command such as: echo 'Cannot do that: <short reason>' — with riskLevel \"safe\",",
@@ -177,6 +181,14 @@ async function withGatewayRetries<T>(modelId: string, work: () => Promise<T>): P
   throw new Error(`AI request failed: ${messageOf(lastErr)}`);
 }
 
+/** A {@link CommandPlan} plus the conversation turns the call produced (for a chat-style REPL). */
+export interface CommandPlanResult {
+  /** The validated command plan. */
+  plan: CommandPlan;
+  /** The turns this call added — the user message sent and the assistant's response. Append to a running history if you're keeping one; ignore otherwise. */
+  exchange: ModelMessage[];
+}
+
 /**
  * Translate a natural-language request into a structured {@link CommandPlan}.
  *
@@ -184,22 +196,34 @@ async function withGatewayRetries<T>(modelId: string, work: () => Promise<T>): P
  * @param args.model   Optional `"provider/model"` id; defaults to {@link DEFAULT_MODEL}.
  *                     Passed straight through to the AI SDK, which routes
  *                     `provider/model` strings via the Vercel AI Gateway.
+ * @param args.history Prior conversation turns (the REPL's session chat). When
+ *                     present, the request is sent as a multi-turn conversation
+ *                     so follow-ups like "now delete them" have context.
+ * @returns The plan and the conversation `exchange` it produced.
  * @throws Error with a printable `.message` — missing credentials, a rejected
  *         model id, gateway auth/budget/rate-limit failures, an empty model
  *         response, or any other SDK failure (wrapped with a concise prefix).
  */
-export async function generateCommandPlan(args: { request: string; model?: string }): Promise<CommandPlan> {
+export async function generateCommandPlan(args: {
+  request: string;
+  model?: string;
+  history?: ModelMessage[];
+}): Promise<CommandPlanResult> {
   if (!hasGatewayCredentials()) {
     throw new Error(MISSING_CREDENTIALS_MESSAGE);
   }
 
   const modelId = args.model ?? DEFAULT_MODEL;
+  const userMessage: ModelMessage = {
+    role: 'user',
+    content: `Target OS: ${process.platform} (assume a POSIX shell). User request: ${args.request}`,
+  };
 
   return withGatewayRetries(modelId, async () => {
     const result = await generateText({
       model: modelId,
       system: SYSTEM_PROMPT,
-      prompt: `Target OS: ${process.platform} (assume a POSIX shell). User request: ${args.request}`,
+      messages: [...(args.history ?? []), userMessage],
       output: Output.object({ schema: commandPlanSchema }),
       temperature: TEMPERATURE,
     });
@@ -208,7 +232,7 @@ export async function generateCommandPlan(args: { request: string; model?: strin
     if (plan === undefined || plan === null) {
       throw new Error('The model did not return a structured command plan.');
     }
-    return plan;
+    return { plan, exchange: [userMessage, ...result.response.messages] };
   });
 }
 

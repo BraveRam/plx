@@ -50,8 +50,8 @@ import {
   SHELL_FILE_ENV,
   SUPPORTED_SHELLS,
 } from './shell-init.ts';
+import type { ModelMessage } from 'ai';
 import type { CliOptions } from './types.ts';
-import type { CommandPlan } from './schema.ts';
 
 /** Exit code used when the user declines the confirmation prompt (SIGINT-ish). */
 const EXIT_ABORTED = 130;
@@ -198,14 +198,29 @@ function resolveMaxSteps(raw: string | undefined): number {
  * a thrown error means something genuinely unexpected (AI failure, spawn error)
  * and is surfaced by the caller — except in the REPL, which catches it per-line.
  */
+/** Cap on the REPL's in-memory chat history (oldest turns drop when over). */
+const MAX_CHAT_MESSAGES = 24;
+
+/** Append `messages` to `conversation` (if any) and trim to {@link MAX_CHAT_MESSAGES}. */
+function pushChat(conversation: ModelMessage[] | undefined, ...messages: ModelMessage[]): void {
+  if (!conversation) return;
+  conversation.push(...messages);
+  while (conversation.length > MAX_CHAT_MESSAGES) conversation.shift();
+}
+
 async function handleRequest(
   request: string,
   options: CliOptions,
   rl?: readline.Interface,
+  conversation?: ModelMessage[],
 ): Promise<number> {
-  const plan: CommandPlan = await withSpinner('thinking…', () =>
-    generateCommandPlan({ request, model: options.model }),
+  const { plan, exchange } = await withSpinner('thinking…', () =>
+    generateCommandPlan({ request, model: options.model, history: conversation }),
   );
+  // The model's plan is part of the conversation regardless of what happens next.
+  pushChat(conversation, ...exchange);
+  /** Record a short note about the outcome so the next chat turn has context. */
+  const note = (text: string): void => pushChat(conversation, { role: 'user', content: text });
 
   if (options.json) {
     console.log(JSON.stringify(plan, null, 2));
@@ -225,11 +240,13 @@ async function handleRequest(
   const verdict = evaluateSafety(plan.command);
   if (!verdict.allowed) {
     renderBlocked(plan.command, verdict.reason ?? 'matched a hard safety block');
+    note(`(The previous command was refused by the safety layer: ${verdict.reason ?? 'hard safety block'})`);
     return 1;
   }
 
   if (options.dryRun) {
     console.log(chalk.dim('(dry run — command not executed)'));
+    note('(Dry run — the previous command was not executed.)');
     return 0;
   }
 
@@ -246,6 +263,7 @@ async function handleRequest(
     const ok = await confirm('Run this command?', rl);
     if (!ok) {
       console.log(chalk.dim('Aborted.'));
+      note('(I declined to run the previous command.)');
       return EXIT_ABORTED;
     }
   }
@@ -269,6 +287,7 @@ async function handleRequest(
   if (result.exitCode !== 0) {
     console.log(chalk.dim(`(exit ${result.exitCode}, ${result.durationMs} ms)`));
   }
+  note(`(I ran the previous command; it exited ${result.exitCode}.)`);
 
   return result.exitCode;
 }
@@ -352,8 +371,10 @@ function printReplHelp(): void {
   console.log(`  ${chalk.cyan('/agent')}            ${chalk.dim('— switch to agent mode (each line becomes a multi-step goal)')}`);
   console.log(`  ${chalk.cyan('/agent <goal>')}     ${chalk.dim('— run one goal in agent mode, without switching')}`);
   console.log(`  ${chalk.cyan('/once')}             ${chalk.dim('— switch back to one-shot mode')}`);
+  console.log(`  ${chalk.cyan('/clear')}            ${chalk.dim('— forget the chat context built up this session')}`);
   console.log(`  ${chalk.cyan('/help')}             ${chalk.dim('— this list')}`);
   console.log(`  ${chalk.cyan('/exit')} (or ${chalk.cyan('Ctrl-D')}) ${chalk.dim('— quit')}`);
+  console.log(chalk.dim('  In one-shot mode each line remembers earlier ones this session (chat context); /clear resets it. Nothing is saved on exit.'));
 }
 
 /**
@@ -372,6 +393,12 @@ async function runRepl(options: CliOptions, startMode: ReplMode = 'shot'): Promi
   console.log();
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+  // Session-scoped chat context for one-shot lines: each line is sent with the
+  // prior turns, so follow-ups have context. In-memory only — dropped on exit,
+  // never persisted. `/clear` empties it. (Agent runs are self-contained and
+  // don't read or write it.)
+  const conversation: ModelMessage[] = [];
 
   // Run a piece of work, surfacing any thrown error without killing the loop.
   const safely = async (work: () => Promise<unknown>): Promise<void> => {
@@ -407,6 +434,12 @@ async function runRepl(options: CliOptions, startMode: ReplMode = 'shot'): Promi
         console.log(chalk.dim('one-shot mode.'));
         continue;
       }
+      if (/^\/(?:clear|reset|new)$/i.test(trimmed)) {
+        const had = conversation.length > 0;
+        conversation.length = 0;
+        console.log(chalk.dim(had ? 'chat context cleared.' : 'chat context is already empty.'));
+        continue;
+      }
       const agentMatch = /^\/agent(?:\s+(.+))?$/is.exec(trimmed);
       if (agentMatch) {
         const goal = agentMatch[1]?.trim();
@@ -427,7 +460,7 @@ async function runRepl(options: CliOptions, startMode: ReplMode = 'shot'): Promi
       if (mode === 'agent') {
         await safely(() => runAgent({ goal: trimmed, options, rl }));
       } else {
-        await safely(() => handleRequest(trimmed, { ...options, json: false }, rl));
+        await safely(() => handleRequest(trimmed, { ...options, json: false }, rl, conversation));
       }
     }
   } finally {
