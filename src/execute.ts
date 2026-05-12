@@ -187,14 +187,17 @@ export interface CapturedExecutionResult extends ExecutionResult {
  */
 export async function executeCommandCapturing(
   command: string,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; captureFinalCwd?: boolean } = {},
 ): Promise<CapturedExecutionResult> {
   const shell = detectShell();
   const start = Date.now();
+  // The cwd epilogue writes to `$PLX_SHELL_FILE` (not stdout), so it never
+  // pollutes the captured output we feed back to the model.
+  const toRun = options.captureFinalCwd ? withCwdCapture(command) : command;
 
   let result;
   try {
-    result = await execa(shell.path, ['-c', command], {
+    result = await execa(shell.path, ['-c', toRun], {
       // Duplicate each stream: 'inherit' shows it live, 'pipe' captures it.
       stdout: ['inherit', 'pipe'],
       stderr: ['inherit', 'pipe'],

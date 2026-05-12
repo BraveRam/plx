@@ -29,6 +29,7 @@ import { runAgentTurn, type AgentTurnResult } from './ai.ts';
 import type { AgentStep } from './schema.ts';
 import { evaluateSafety } from './safety.ts';
 import { AGENT_STEP_TIMEOUT_MS, detectShell, executeCommandCapturing } from './execute.ts';
+import { SHELL_FILE_ENV } from './shell-init.ts';
 import { recordHistory } from './history.ts';
 import {
   confirm,
@@ -246,7 +247,12 @@ export async function runAgent(args: RunAgentArgs): Promise<number> {
       }
     }
 
-    const result = await executeCommandCapturing(step.command, { timeoutMs: AGENT_STEP_TIMEOUT_MS });
+    const result = await executeCommandCapturing(step.command, {
+      timeoutMs: AGENT_STEP_TIMEOUT_MS,
+      // Under shell integration, carry the step's final cwd back to the user's
+      // shell — so `plx --agent "take me to ~/projects"` actually moves them.
+      captureFinalCwd: Boolean(process.env[SHELL_FILE_ENV]),
+    });
     renderAgentOutcome(result.exitCode, result.durationMs, result.timedOut);
 
     if (options.history) {
