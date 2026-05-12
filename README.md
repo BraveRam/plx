@@ -156,6 +156,7 @@ Module layout (`src/`):
 | `ai.ts` | AI Gateway calls and system prompts (`generateText` + `Output.object`) — one-shot and agent turns |
 | `agent.ts` | The agentic loop: step budget, per-step safety, feeding output back to the model |
 | `config.ts` | Loads `~/.config/plx/.env` into `process.env` for missing keys (so credentials work from any directory) |
+| `chat.ts` | The REPL's in-memory session chat helpers (`pushChat`, the cap) — shared by one-shot lines and agent runs |
 | `schema.ts` | Zod schemas for the model's structured responses (one-shot plan + agent step) and their inferred types |
 | `safety.ts` | Deny-list + always-confirm list + read-only allow-list (`evaluateSafety`) |
 | `execute.ts` | Shell detection; command execution (live streaming; a capturing variant for agent mode; final-cwd capture for shell integration) |
@@ -164,7 +165,7 @@ Module layout (`src/`):
 | `history.ts` | Best-effort append to `~/.plx_history` |
 | `types.ts` | Shared types |
 
-`bun:test` unit tests live in `tests/` (`safety.test.ts`, `execute.test.ts`, `agent.test.ts`, `shell-init.test.ts`, `config.test.ts`) and import the modules under test via `../src/…`. `bun test` picks them up automatically.
+`bun:test` unit tests live in `tests/` (`safety.test.ts`, `execute.test.ts`, `agent.test.ts`, `shell-init.test.ts`, `config.test.ts`, `prompt.test.ts`) and import the modules under test via `../src/…`. `bun test` picks them up automatically.
 
 ## Safety model
 
@@ -234,7 +235,7 @@ plx agent · up to 20 steps · …
 plx> exit
 ```
 
-**Chat context (session-scoped).** In one-shot mode, each line is sent to the model with the earlier turns of the session, so follow-ups like *"now delete them"* or *"that failed, try X"* have context. It's in-memory only — wiped by `/clear` and gone when you exit; nothing is written to disk. A failed line (AI error, blocked command, declined step) is reported and the session continues. (Agent runs are self-contained — they don't read or write this chat context.)
+**Chat context (session-scoped).** Lines in a session share conversation context — each one is sent to the model with the earlier turns, so follow-ups like *"now delete them"*, *"that failed, try X"*, or *"you remember the name I gave you?"* work. After a command runs (or is declined / blocked / dry-run) a short *"(I ran the previous command; it exited 0.)"* note is added too, so the next turn knows the outcome. **Agent runs join this too** — a run is *seeded* with the session chat, and afterwards a compact *`[agent] <goal>` → `<final summary>`* pair is appended (its step-by-step internals aren't kept). It's all **in-memory only** — wiped by `/clear`, gone when you exit, never written to disk; capped at the last ~24 turns so it doesn't balloon. A failed line (AI error, blocked command, declined step) is reported and the session continues.
 
 REPL commands:
 

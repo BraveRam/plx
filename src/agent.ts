@@ -39,6 +39,7 @@ import {
   renderBlocked,
   withSpinner,
 } from './prompt.ts';
+import { pushChat } from './chat.ts';
 import type { CliOptions } from './types.ts';
 
 /** Default ceiling on command steps in agent mode. */
@@ -122,6 +123,13 @@ export interface RunAgentArgs {
   turn?: AgentTurnFn;
   /** A readline interface already open on stdin (the REPL) — reused for confirmation prompts. */
   rl?: readline.Interface;
+  /**
+   * The REPL's session chat (see `chat.ts`). When given, the run is *seeded*
+   * with it (so the agent sees what was said earlier in the session), and a
+   * compact `[agent] <goal>` → `<final summary>` pair is appended afterwards.
+   * The run's own step-by-step turns are NOT added to it.
+   */
+  conversation?: ModelMessage[];
 }
 
 /**
@@ -137,7 +145,21 @@ export async function runAgent(args: RunAgentArgs): Promise<number> {
 
   renderAgentBanner(goal, options.model, maxSteps);
 
+  let stepsUsed = 0;
+  let invalidRetries = 0;
+
+  // Finish: render the outcome, append a compact `[agent] <goal>` → summary pair
+  // to the session chat (if any), and return the exit code.
+  const finish = (kind: 'done' | 'blocked' | 'limit', summary: string, code: number): number => {
+    renderAgentFinish(kind, summary, stepsUsed, maxSteps);
+    pushChat(args.conversation, { role: 'user', content: `[agent] ${goal}` }, { role: 'assistant', content: summary });
+    return code;
+  };
+
+  // The run's working conversation: seeded with the session chat (so the agent
+  // sees what was said earlier), then the goal as the latest turn.
   const messages: ModelMessage[] = [
+    ...(args.conversation ?? []),
     {
       role: 'user',
       content: [
@@ -150,9 +172,6 @@ export async function runAgent(args: RunAgentArgs): Promise<number> {
     },
   ];
 
-  let stepsUsed = 0;
-  let invalidRetries = 0;
-
   while (stepsUsed < maxSteps) {
     const { step, responseMessages } = await withSpinner('thinking…', () =>
       turn({ model: options.model, messages }),
@@ -160,24 +179,20 @@ export async function runAgent(args: RunAgentArgs): Promise<number> {
     messages.push(...responseMessages);
 
     if (step.status === 'done') {
-      renderAgentFinish('done', step.summary ?? 'Goal accomplished.', stepsUsed, maxSteps);
-      return 0;
+      return finish('done', step.summary ?? 'Goal accomplished.', 0);
     }
     if (step.status === 'blocked') {
-      renderAgentFinish('blocked', step.summary ?? 'The agent stopped without giving a reason.', stepsUsed, maxSteps);
-      return 1;
+      return finish('blocked', step.summary ?? 'The agent stopped without giving a reason.', 1);
     }
 
     // status === 'continue' — must carry a runnable command.
     if (!isRunnableStep(step)) {
       if (invalidRetries >= 1) {
-        renderAgentFinish(
+        return finish(
           'blocked',
           'The model kept returning invalid steps (status "continue" without a usable "command"). Aborting.',
-          stepsUsed,
-          maxSteps,
+          1,
         );
-        return 1;
       }
       invalidRetries += 1;
       messages.push({
@@ -222,6 +237,11 @@ export async function runAgent(args: RunAgentArgs): Promise<number> {
       const ok = await confirm(`Run this ${label}?`, rl);
       if (!ok) {
         console.log(chalk.dim('Declined — stopping the agent.'));
+        pushChat(
+          args.conversation,
+          { role: 'user', content: `[agent] ${goal}` },
+          { role: 'assistant', content: '(Stopped — you declined a step.)' },
+        );
         return EXIT_ABORTED;
       }
     }
@@ -266,13 +286,10 @@ export async function runAgent(args: RunAgentArgs): Promise<number> {
       }),
     );
     if (step.status === 'done') {
-      renderAgentFinish('done', step.summary ?? 'Goal accomplished.', stepsUsed, maxSteps);
-      return 0;
+      return finish('done', step.summary ?? 'Goal accomplished.', 0);
     }
-    renderAgentFinish('limit', step.summary ?? `Reached the ${maxSteps}-step limit before the goal was confirmed complete.`, stepsUsed, maxSteps);
-    return 1;
+    return finish('limit', step.summary ?? `Reached the ${maxSteps}-step limit before the goal was confirmed complete.`, 1);
   } catch {
-    renderAgentFinish('limit', `Reached the ${maxSteps}-step limit before the goal was confirmed complete.`, stepsUsed, maxSteps);
-    return 1;
+    return finish('limit', `Reached the ${maxSteps}-step limit before the goal was confirmed complete.`, 1);
   }
 }

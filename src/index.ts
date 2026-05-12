@@ -38,6 +38,7 @@ import { statSync, writeFileSync } from 'node:fs';
 import { generateCommandPlan, DEFAULT_MODEL } from './ai.ts';
 import { runAgent, DEFAULT_MAX_STEPS, MIN_MAX_STEPS, MAX_MAX_STEPS } from './agent.ts';
 import { loadGlobalConfig } from './config.ts';
+import { pushChat } from './chat.ts';
 import { evaluateSafety } from './safety.ts';
 import { detectShell, executeCommand } from './execute.ts';
 import { renderPlan, renderBlocked, confirm, withSpinner, safeText } from './prompt.ts';
@@ -198,15 +199,6 @@ function resolveMaxSteps(raw: string | undefined): number {
  * a thrown error means something genuinely unexpected (AI failure, spawn error)
  * and is surfaced by the caller — except in the REPL, which catches it per-line.
  */
-/** Cap on the REPL's in-memory chat history (oldest turns drop when over). */
-const MAX_CHAT_MESSAGES = 24;
-
-/** Append `messages` to `conversation` (if any) and trim to {@link MAX_CHAT_MESSAGES}. */
-function pushChat(conversation: ModelMessage[] | undefined, ...messages: ModelMessage[]): void {
-  if (!conversation) return;
-  conversation.push(...messages);
-  while (conversation.length > MAX_CHAT_MESSAGES) conversation.shift();
-}
 
 async function handleRequest(
   request: string,
@@ -374,7 +366,7 @@ function printReplHelp(): void {
   console.log(`  ${chalk.cyan('/clear')}            ${chalk.dim('— forget the chat context built up this session')}`);
   console.log(`  ${chalk.cyan('/help')}             ${chalk.dim('— this list')}`);
   console.log(`  ${chalk.cyan('/exit')} (or ${chalk.cyan('Ctrl-D')}) ${chalk.dim('— quit')}`);
-  console.log(chalk.dim('  In one-shot mode each line remembers earlier ones this session (chat context); /clear resets it. Nothing is saved on exit.'));
+  console.log(chalk.dim('  Lines this session share chat context — follow-ups like "now delete them" / "you remember the name?" work. /clear resets it; nothing is saved on exit.'));
 }
 
 /**
@@ -444,7 +436,7 @@ async function runRepl(options: CliOptions, startMode: ReplMode = 'shot'): Promi
       if (agentMatch) {
         const goal = agentMatch[1]?.trim();
         if (goal) {
-          await safely(() => runAgent({ goal, options, rl }));
+          await safely(() => runAgent({ goal, options, rl, conversation }));
         } else {
           mode = 'agent';
           console.log(chalk.dim(`agent mode: each line is a goal (up to ${options.maxSteps} steps); /once for one-shot.`));
@@ -458,7 +450,7 @@ async function runRepl(options: CliOptions, startMode: ReplMode = 'shot'): Promi
 
       // --- a plain line: run per the current mode ---
       if (mode === 'agent') {
-        await safely(() => runAgent({ goal: trimmed, options, rl }));
+        await safely(() => runAgent({ goal: trimmed, options, rl, conversation }));
       } else {
         await safely(() => handleRequest(trimmed, { ...options, json: false }, rl, conversation));
       }

@@ -4,6 +4,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
+import type { ModelMessage } from 'ai';
 import { runAgent, truncateForFeedback, DEFAULT_MAX_STEPS, type AgentTurnFn } from '../src/agent.ts';
 import type { AgentStep } from '../src/schema.ts';
 import type { CliOptions } from '../src/types.ts';
@@ -132,6 +133,30 @@ describe('runAgent', () => {
       ]),
     });
     expect(code).toBe(130);
+  });
+
+  test('a `conversation` is seeded into the run and gets a compact summary appended after', async () => {
+    const conversation: ModelMessage[] = [
+      { role: 'user', content: 'earlier: my name is bash' },
+      { role: 'assistant', content: '{"command":"echo bash"}' },
+    ];
+    let sawPriorContext = false;
+    const turn: AgentTurnFn = async ({ messages }) => {
+      // The run should hand the model the prior turns followed by the goal.
+      if (messages.some((m) => typeof m.content === 'string' && m.content.includes('earlier: my name is bash'))) {
+        sawPriorContext = true;
+      }
+      const step: AgentStep = { status: 'done', thought: 'recalled it', summary: 'Your name is bash.' };
+      return { step, responseMessages: [{ role: 'assistant', content: JSON.stringify(step) }] };
+    };
+
+    const code = await runAgent({ goal: 'what name did I tell you?', options: makeOptions(), turn, conversation });
+    expect(code).toBe(0);
+    expect(sawPriorContext).toBe(true);
+    // The session chat now has the two original turns plus the agent exchange.
+    expect(conversation.length).toBe(4);
+    expect(conversation[2]).toEqual({ role: 'user', content: '[agent] what name did I tell you?' });
+    expect(conversation[3]).toEqual({ role: 'assistant', content: 'Your name is bash.' });
   });
 });
 
