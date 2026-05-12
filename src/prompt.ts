@@ -159,17 +159,18 @@ export function renderBlocked(command: string, reason: string): void {
  * Ask the user a yes/no question on the terminal. Resolves `true` only on an
  * explicit "y" / "yes" (case-insensitive, surrounding whitespace ignored);
  * anything else — including an empty answer or EOF (Ctrl-D) — resolves `false`.
+ *
+ * Pass `sharedRl` when a readline interface is already open on stdin (the REPL):
+ * we reuse it instead of opening a second one, which would fight over the input
+ * stream. Without it, a transient interface is created and closed.
  */
-export async function confirm(question: string): Promise<boolean> {
+export async function confirm(question: string, sharedRl?: readline.Interface): Promise<boolean> {
   // If stdin is not a TTY (piped input, CI, no controlling terminal) there is no
   // one to answer, and blocking on a read would hang the process forever. Treat
   // that as "no" — the caller interprets a false result as "aborted by user".
   if (!process.stdin.isTTY) return false;
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+  const rl = sharedRl ?? readline.createInterface({ input: process.stdin, output: process.stdout });
 
   try {
     const answer = await rl.question(`${question} ${chalk.dim('[y/N]')} `);
@@ -179,7 +180,7 @@ export async function confirm(question: string): Promise<boolean> {
     // `rl.question` rejects when the stream closes (e.g. Ctrl-D). Treat as "no".
     return false;
   } finally {
-    rl.close();
+    if (!sharedRl) rl.close();
   }
 }
 

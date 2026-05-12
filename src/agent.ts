@@ -23,6 +23,7 @@
  */
 
 import chalk from 'chalk';
+import type * as readline from 'node:readline/promises';
 import type { ModelMessage } from 'ai';
 import { runAgentTurn, type AgentTurnResult } from './ai.ts';
 import type { AgentStep } from './schema.ts';
@@ -119,6 +120,8 @@ export interface RunAgentArgs {
   options: CliOptions;
   /** Override the model-turn function (for tests); defaults to {@link runAgentTurn}. */
   turn?: AgentTurnFn;
+  /** A readline interface already open on stdin (the REPL) — reused for confirmation prompts. */
+  rl?: readline.Interface;
 }
 
 /**
@@ -127,7 +130,7 @@ export interface RunAgentArgs {
  * step. Unexpected errors (AI/network/spawn) propagate to the caller.
  */
 export async function runAgent(args: RunAgentArgs): Promise<number> {
-  const { goal, options } = args;
+  const { goal, options, rl } = args;
   const turn: AgentTurnFn = args.turn ?? runAgentTurn;
   const maxSteps = options.maxSteps;
   const shell = detectShell();
@@ -216,7 +219,7 @@ export async function runAgent(args: RunAgentArgs): Promise<number> {
           : step.riskLevel === 'caution'
             ? `${chalk.yellow('caution')} command`
             : 'command';
-      const ok = await confirm(`Run this ${label}?`);
+      const ok = await confirm(`Run this ${label}?`, rl);
       if (!ok) {
         console.log(chalk.dim('Declined — stopping the agent.'));
         return EXIT_ABORTED;

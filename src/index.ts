@@ -40,7 +40,7 @@ import { runAgent, DEFAULT_MAX_STEPS, MIN_MAX_STEPS, MAX_MAX_STEPS } from './age
 import { loadGlobalConfig } from './config.ts';
 import { evaluateSafety } from './safety.ts';
 import { detectShell, executeCommand } from './execute.ts';
-import { renderPlan, renderBlocked, confirm, withSpinner } from './prompt.ts';
+import { renderPlan, renderBlocked, confirm, withSpinner, safeText } from './prompt.ts';
 import { recordHistory } from './history.ts';
 import {
   asShellKind,
@@ -198,7 +198,11 @@ function resolveMaxSteps(raw: string | undefined): number {
  * a thrown error means something genuinely unexpected (AI failure, spawn error)
  * and is surfaced by the caller — except in the REPL, which catches it per-line.
  */
-async function handleRequest(request: string, options: CliOptions): Promise<number> {
+async function handleRequest(
+  request: string,
+  options: CliOptions,
+  rl?: readline.Interface,
+): Promise<number> {
   const plan: CommandPlan = await withSpinner('thinking…', () =>
     generateCommandPlan({ request, model: options.model }),
   );
@@ -239,7 +243,7 @@ async function handleRequest(request: string, options: CliOptions): Promise<numb
     if (verdict.forceConfirm && verdict.reason) {
       console.log(chalk.yellow(`  ${verdict.reason}`));
     }
-    const ok = await confirm('Run this command?');
+    const ok = await confirm('Run this command?', rl);
     if (!ok) {
       console.log(chalk.dim('Aborted.'));
       return EXIT_ABORTED;
@@ -339,18 +343,50 @@ function printCdAdvice(dir: string): void {
  * failure, blocked command, …) is reported and the loop continues. JSON mode is
  * forced off inside the REPL — it would just dump JSON and immediately ask again.
  */
-async function runRepl(options: CliOptions): Promise<number> {
-  console.log(`${chalk.bold('plx')} — Type a request, or "exit" / Ctrl-D to quit.`);
-  console.log(chalk.dim(`model: ${options.model}`));
+type ReplMode = 'shot' | 'agent';
+
+/** Print the list of REPL commands. */
+function printReplHelp(): void {
+  console.log(chalk.dim('REPL commands:'));
+  console.log(`  ${chalk.cyan('<text>')}            ${chalk.dim('— run as a request (or, in agent mode, as a goal)')}`);
+  console.log(`  ${chalk.cyan('/agent')}            ${chalk.dim('— switch to agent mode (each line becomes a multi-step goal)')}`);
+  console.log(`  ${chalk.cyan('/agent <goal>')}     ${chalk.dim('— run one goal in agent mode, without switching')}`);
+  console.log(`  ${chalk.cyan('/once')}             ${chalk.dim('— switch back to one-shot mode')}`);
+  console.log(`  ${chalk.cyan('/help')}             ${chalk.dim('— this list')}`);
+  console.log(`  ${chalk.cyan('/exit')} (or ${chalk.cyan('Ctrl-D')}) ${chalk.dim('— quit')}`);
+}
+
+/**
+ * Interactive REPL — `plx` with no request (one-shot mode), or `plx --agent`
+ * with no goal (agent mode). Each line is handled per the current mode; an error
+ * on one line (AI failure, blocked command, declined step) is reported and the
+ * loop continues. Slash-commands switch modes / run one-offs. JSON mode is
+ * forced off inside the REPL.
+ */
+async function runRepl(options: CliOptions, startMode: ReplMode = 'shot'): Promise<number> {
+  let mode: ReplMode = startMode;
+  console.log(`${chalk.bold('plx')} ${chalk.dim('— interactive.')} ${chalk.dim(`/help for commands · model: ${options.model}`)}`);
+  if (mode === 'agent') {
+    console.log(chalk.dim(`agent mode: each line is a goal (up to ${options.maxSteps} steps); /once for one-shot.`));
+  }
   console.log();
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+  // Run a piece of work, surfacing any thrown error without killing the loop.
+  const safely = async (work: () => Promise<unknown>): Promise<void> => {
+    try {
+      await work();
+    } catch (err) {
+      console.error(chalk.red('Error:'), err instanceof Error ? err.message : String(err));
+    }
+  };
 
   try {
     for (;;) {
       let line: string;
       try {
-        line = await rl.question(chalk.cyan('plx> '));
+        line = await rl.question(chalk.cyan(mode === 'agent' ? 'plx agent> ' : 'plx> '));
       } catch {
         // `rl.question` rejects on EOF (Ctrl-D) / stream close — end the loop.
         console.log();
@@ -359,12 +395,39 @@ async function runRepl(options: CliOptions): Promise<number> {
 
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
-      if (trimmed === 'exit' || trimmed === 'quit') break;
 
-      try {
-        await handleRequest(trimmed, { ...options, json: false });
-      } catch (err) {
-        console.error(chalk.red('Error:'), err instanceof Error ? err.message : String(err));
+      // --- slash-commands & bare keywords ---
+      if (/^(?:exit|quit|\/exit|\/quit|:q)$/i.test(trimmed)) break;
+      if (/^(?:\/help|\?|help)$/i.test(trimmed)) {
+        printReplHelp();
+        continue;
+      }
+      if (/^\/once$|^\/shot$|^\/agent\s+off$/i.test(trimmed)) {
+        mode = 'shot';
+        console.log(chalk.dim('one-shot mode.'));
+        continue;
+      }
+      const agentMatch = /^\/agent(?:\s+(.+))?$/is.exec(trimmed);
+      if (agentMatch) {
+        const goal = agentMatch[1]?.trim();
+        if (goal) {
+          await safely(() => runAgent({ goal, options, rl }));
+        } else {
+          mode = 'agent';
+          console.log(chalk.dim(`agent mode: each line is a goal (up to ${options.maxSteps} steps); /once for one-shot.`));
+        }
+        continue;
+      }
+      if (trimmed.startsWith('/')) {
+        console.log(chalk.dim(`unknown command "${safeText(trimmed)}" — /help for the list.`));
+        continue;
+      }
+
+      // --- a plain line: run per the current mode ---
+      if (mode === 'agent') {
+        await safely(() => runAgent({ goal: trimmed, options, rl }));
+      } else {
+        await safely(() => handleRequest(trimmed, { ...options, json: false }, rl));
       }
     }
   } finally {
@@ -395,22 +458,16 @@ async function main(): Promise<void> {
   const options = resolveOptions(program);
   const request = (program.args as string[]).join(' ').trim();
 
-  if (options.agent && request.length === 0) {
-    console.error(
-      chalk.red('Error:'),
-      '--agent needs a goal, e.g.  plx --agent "build and test the project"',
-    );
-    process.exit(2);
-  }
-
   try {
     let code: number;
-    if (options.agent) {
+    if (options.agent && request.length > 0) {
       code = await runAgent({ goal: request, options });
+    } else if (options.agent) {
+      code = await runRepl(options, 'agent'); // `plx --agent` with no goal → interactive agent REPL
     } else if (request.length > 0) {
       code = await handleRequest(request, options);
     } else {
-      code = await runRepl(options);
+      code = await runRepl(options, 'shot');
     }
     process.exit(code);
   } catch (err) {

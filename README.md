@@ -220,15 +220,28 @@ Run `plx` with no arguments to open a prompt:
 
 ```console
 $ plx
-plx — Type a request, or "exit" / Ctrl-D to quit.
-model: deepseek/deepseek-v4-flash
+plx — interactive. /help for commands · model: deepseek/deepseek-v4-flash
 
 plx> find the 10 largest files under /var/log
+...
+plx> /agent install deps, run the tests, and tell me what failed
+plx agent · up to 20 steps · …
 ...
 plx> exit
 ```
 
-Each line is handled like a one-shot invocation (still stateless). A failed line — an AI error, a blocked command — is reported and the session continues. `exit`, `quit`, or Ctrl-D leaves.
+Each line is handled like a one-shot invocation (still stateless — no memory between lines). A failed line — an AI error, a blocked command, a declined step — is reported and the session continues. REPL commands:
+
+| | |
+|---|---|
+| `<text>` | run as a request — or, in agent mode, as a multi-step goal |
+| `/agent` | switch to **agent mode**: each line becomes a goal (up to `--max-steps`, default 20) |
+| `/agent <goal>` | run one goal in agent mode without switching |
+| `/once` | switch back to one-shot mode |
+| `/help` | the command list |
+| `/exit`, `exit`, `quit`, Ctrl-D | quit |
+
+`plx --agent` with no goal starts the REPL already in agent mode (`plx agent> `). `--yes` / `--max-steps` from the launch command apply to all agent runs in the session.
 
 ## Command history
 
