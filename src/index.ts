@@ -87,7 +87,7 @@ export function buildProgram(): Command {
     )
     .option('--json', 'print the raw structured JSON plan and exit (no execution)')
     .option(
-      '--agent',
+      '-a, --agent',
       `agentic mode: pursue the request over multiple steps, observing each command's output (see --max-steps)`,
     )
     .option(

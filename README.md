@@ -128,7 +128,7 @@ bun run dev -- --agent "set up this project"
 | `--dry-run` | Show the generated command but do not execute it. (Ignored with `--agent`.) |
 | `-y`, `--yes` | Skip the confirmation prompt and execute immediately. Deny-listed commands are still refused. With `--agent`, also auto-runs `caution`/`dangerous` steps (without it, only read-only steps run unattended). |
 | `--json` | Print the raw structured JSON plan and exit (no execution). (Ignored with `--agent`.) |
-| `--agent` | Agentic mode: pursue the request over multiple steps. See [Agent mode](#agent-mode). |
+| `-a`, `--agent` | Agentic mode: pursue the request over multiple steps. See [Agent mode](#agent-mode). |
 | `--max-steps <n>` | Agent mode only: maximum command steps before stopping. Default `20`; clamped to `1`–`100`. |
 | `--model <name>` | AI Gateway model id (`provider/model`). Also settable via `PLX_MODEL`; `--model` wins. |
 | `--no-history` | Do not append executed commands to `~/.plx_history`. |
